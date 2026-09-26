@@ -4,11 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+  workflow_dispatch:
 
 jobs:
-  test:
+  testes:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     services:
       mongodb:
@@ -21,20 +22,52 @@ jobs:
           --health-timeout 5s
           --health-retries 5
 
+    env:
+      PORT: 3000
+      URL_BASE: http://localhost:3000
+      MONGODB_URI: mongodb://127.0.0.1:27017/gestao-de-alunos-test
+      # Credenciais do admin seedado (src/database/seed.js). O .env não é versionado,
+      # então a pipeline injeta as variáveis; o dotenv não sobrescreve variáveis já definidas.
+      ADMIN_EMAIL: admin@escola.com
+      ADMIN_PASSWORD: admin123
+
     steps:
-      - name: Checkout do código
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Configurar Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Instalar dependências
         run: npm ci
 
-      - name: Executar testes
+      - name: Subir a API em background
+        run: |
+          nohup npm start > api.log 2>&1 &
+          for i in $(seq 1 30); do
+            if curl -sf "$URL_BASE/" > /dev/null; then
+              echo "API no ar"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "A API não subiu a tempo:"
+          cat api.log
+          exit 1
+
+      - name: Garantir que não há .only nos testes
+        run: |
+          if grep -rnF -e 'it.only(' -e 'describe.only(' -e 'context.only(' test/; then
+            echo "::error::Remova o .only dos testes acima: ele faz o Mocha ignorar todos os outros."
+            exit 1
+          fi
+
+      - name: Executar testes (Mocha)
         run: npm test
-        env:
-          MONGODB_URI: mongodb://127.0.0.1:27017/gestao-de-alunos-test
+
+      - name: Exibir log da API em caso de falha
+        if: failure()
+        run: cat api.log
